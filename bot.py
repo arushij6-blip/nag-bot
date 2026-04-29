@@ -293,8 +293,5 @@ def main():
 
 
 if __name__ == "__main__":
-    import time
-    logger.info("Waiting 10s for any existing Telegram session to clear...")
-    time.sleep(10)
     asyncio.set_event_loop(asyncio.new_event_loop())
     main()
