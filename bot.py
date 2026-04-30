@@ -83,9 +83,33 @@ def parse_deadline(deadline_text: str) -> datetime | None:
         except ValueError:
             pass
 
-    for fmt in ["%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"]:
+    formats_with_time = [
+        "%d %B, %I:%M %p",      # 13 April, 9:00 AM
+        "%d %B, %I%p",           # 13 April, 9AM
+        "%d %B %I:%M %p",        # 13 April 9:00 AM
+        "%d %B %I%p",            # 13 April 9AM
+        "%d %b, %I:%M %p",       # 13 Apr, 9:00 AM
+        "%d %b, %I%p",           # 13 Apr, 9AM
+        "%d %b %I:%M %p",        # 13 Apr 9:00 AM
+        "%d %b %I%p",            # 13 Apr 9AM
+        "%Y-%m-%d %H:%M",        # 2026-05-13 09:00
+        "%d/%m/%Y %H:%M",        # 13/05/2026 09:00
+        "%d-%m-%Y %H:%M",        # 13-05-2026 09:00
+        "%Y-%m-%d %I:%M %p",     # 2026-05-13 9:00 AM
+        "%d/%m/%Y %I:%M %p",     # 13/05/2026 9:00 AM
+    ]
+    for fmt in formats_with_time:
         try:
-            return datetime.strptime(deadline_text, fmt).replace(hour=21, minute=0, second=0, microsecond=0)
+            return datetime.strptime(deadline_text, fmt)
+        except ValueError:
+            continue
+
+    for fmt in ["%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d %B", "%d %b"]:
+        try:
+            parsed = datetime.strptime(deadline_text, fmt)
+            if parsed.year == 1900:
+                parsed = parsed.replace(year=datetime.now().year)
+            return parsed.replace(hour=21, minute=0, second=0, microsecond=0)
         except ValueError:
             continue
 
@@ -131,7 +155,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(parts) < 2:
         await update.message.reply_text(
             "I need a deadline! Use format:\n/add <task> by <deadline>\n\n"
-            "Deadlines: today, tomorrow, tonight, Monday-Sunday, 3 days, 5 hours, 2026-05-01"
+            "Deadlines: today, tomorrow, tonight, Monday-Sunday, 3 days, 5 hours, 13 April, 13 April 9AM, 2026-05-01"
         )
         return
 
@@ -142,7 +166,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not deadline:
         await update.message.reply_text(
             f"Couldn't understand deadline: '{deadline_text}'\n\n"
-            "Try: today, tomorrow, tonight, Monday, 3 days, 5 hours, or YYYY-MM-DD"
+            "Try: today, tomorrow, tonight, Monday, 3 days, 5 hours, 13 April, 13 April 9AM, or YYYY-MM-DD"
         )
         return
 
