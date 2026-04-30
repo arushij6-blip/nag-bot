@@ -53,10 +53,26 @@ def is_ankush(update: Update) -> bool:
 def parse_deadline(deadline_text: str) -> datetime | None:
     deadline_text = deadline_text.strip().lower()
 
+    time_suffix = None
+    for keyword in ["today", "tomorrow", "tonight"]:
+        if deadline_text.startswith(keyword):
+            time_part = deadline_text[len(keyword):].strip().strip(",").strip()
+            if time_part:
+                for fmt in ["%I:%M %p", "%I%p", "%I:%M%p", "%H:%M"]:
+                    try:
+                        parsed_time = datetime.strptime(time_part, fmt)
+                        time_suffix = (parsed_time.hour, parsed_time.minute)
+                        break
+                    except ValueError:
+                        continue
+            deadline_text = keyword
+
     if deadline_text == "today":
-        return datetime.now().replace(hour=21, minute=0, second=0, microsecond=0)
+        h, m = time_suffix or (21, 0)
+        return datetime.now().replace(hour=h, minute=m, second=0, microsecond=0)
     if deadline_text == "tomorrow":
-        return (datetime.now() + timedelta(days=1)).replace(hour=21, minute=0, second=0, microsecond=0)
+        h, m = time_suffix or (21, 0)
+        return (datetime.now() + timedelta(days=1)).replace(hour=h, minute=m, second=0, microsecond=0)
     if deadline_text == "tonight":
         return datetime.now().replace(hour=22, minute=0, second=0, microsecond=0)
 
