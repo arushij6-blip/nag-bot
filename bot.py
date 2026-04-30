@@ -35,8 +35,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ARUSHI_CHAT_ID = int(os.getenv("ARUSHI_CHAT_ID") or "0")
-ANKUSH_CHAT_ID = int(os.getenv("ANKUSH_CHAT_ID") or "0")
+
+raw_arushi = os.getenv("ARUSHI_CHAT_ID")
+raw_ankush = os.getenv("ANKUSH_CHAT_ID")
+logger.info(f"RAW env vars: ARUSHI_CHAT_ID={raw_arushi!r}, ANKUSH_CHAT_ID={raw_ankush!r}")
+logger.info(f"All CHAT/ANKUSH env vars: {[(k,v) for k,v in os.environ.items() if 'CHAT' in k or 'ANKUSH' in k]}")
+
+ARUSHI_CHAT_ID = int(raw_arushi or "0")
+ANKUSH_CHAT_ID = int(raw_ankush or "0")
 
 app_instance = None
 
