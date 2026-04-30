@@ -1,8 +1,11 @@
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "nag_bot.db"
+DATA_DIR = Path(os.getenv("DATA_DIR", Path(__file__).parent))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH = DATA_DIR / "nag_bot.db"
 
 
 def get_connection():
