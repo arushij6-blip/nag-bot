@@ -78,13 +78,29 @@ def parse_deadline(deadline_text: str) -> datetime | None:
         return datetime.now().replace(hour=h, minute=m, second=0, microsecond=0)
 
     day_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-    if deadline_text in day_names:
-        target_day = day_names.index(deadline_text)
+    matched_day = None
+    day_time_suffix = None
+    for day in day_names:
+        if deadline_text.startswith(day):
+            matched_day = day
+            time_part = deadline_text[len(day):].strip().strip(",").strip()
+            if time_part:
+                for fmt in ["%I:%M %p", "%I%p", "%I:%M%p", "%H:%M"]:
+                    try:
+                        parsed_time = datetime.strptime(time_part, fmt)
+                        day_time_suffix = (parsed_time.hour, parsed_time.minute)
+                        break
+                    except ValueError:
+                        continue
+            break
+    if matched_day:
+        target_day = day_names.index(matched_day)
         today = datetime.now()
         days_ahead = (target_day - today.weekday()) % 7
         if days_ahead == 0:
             days_ahead = 7
-        return (today + timedelta(days=days_ahead)).replace(hour=21, minute=0, second=0, microsecond=0)
+        h, m = day_time_suffix or (21, 0)
+        return (today + timedelta(days=days_ahead)).replace(hour=h, minute=m, second=0, microsecond=0)
 
     if deadline_text.endswith("days"):
         try:
