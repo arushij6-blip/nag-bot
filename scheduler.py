@@ -38,10 +38,19 @@ def schedule_task_reminders(task: dict):
     reminder_times = compute_reminder_times(created_at, deadline)
     already_sent = task["reminders_sent"]
 
+    now = datetime.now()
+    remaining_until_deadline = deadline - now
+    remaining_reminders = 3 - already_sent
+
     for i in range(already_sent, 3):
         scheduled_time = reminder_times[i]
-        if scheduled_time <= datetime.now():
-            scheduled_time = datetime.now() + timedelta(seconds=10 + i * 5)
+        if scheduled_time <= now:
+            if remaining_until_deadline <= timedelta(0):
+                offset = timedelta(hours=2) * (i - already_sent + 1)
+            else:
+                interval = remaining_until_deadline / remaining_reminders
+                offset = interval * (i - already_sent + 1)
+            scheduled_time = now + offset
 
         scheduler.add_job(
             _fire_reminder,
