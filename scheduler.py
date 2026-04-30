@@ -18,8 +18,7 @@ def set_reminder_callback(callback):
 def compute_reminder_times(created_at: datetime, deadline: datetime) -> list[datetime]:
     total_duration = deadline - created_at
     if total_duration <= timedelta(0):
-        now = datetime.now()
-        return [now, now + timedelta(hours=2), now + timedelta(hours=4)]
+        return [created_at, created_at, created_at]
 
     interval = total_duration / 3
     return [
@@ -39,17 +38,25 @@ def schedule_task_reminders(task: dict):
     already_sent = task["reminders_sent"]
 
     now = datetime.now()
+
+    if deadline <= now:
+        scheduler.add_job(
+            _fire_reminder,
+            trigger=DateTrigger(run_date=now + timedelta(seconds=10)),
+            args=[task["id"], task["description"], 3, deadline],
+            id=f"reminder_{task['id']}_overdue",
+            replace_existing=True,
+        )
+        return
+
     remaining_until_deadline = deadline - now
     remaining_reminders = 3 - already_sent
 
     for i in range(already_sent, 3):
         scheduled_time = reminder_times[i]
         if scheduled_time <= now:
-            if remaining_until_deadline <= timedelta(0):
-                offset = timedelta(hours=2) * (i - already_sent + 1)
-            else:
-                interval = remaining_until_deadline / remaining_reminders
-                offset = interval * (i - already_sent + 1)
+            interval = remaining_until_deadline / remaining_reminders
+            offset = interval * (i - already_sent + 1)
             scheduled_time = now + offset
 
         scheduler.add_job(
