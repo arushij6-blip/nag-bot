@@ -40,13 +40,17 @@ ANKUSH_CHAT_ID = int(os.getenv("ANKUSH_CHAT_ID") or "0")
 
 app_instance = None
 
+logger.info(f"Loaded ARUSHI_CHAT_ID={ARUSHI_CHAT_ID}, ANKUSH_CHAT_ID={ANKUSH_CHAT_ID}")
+
 
 def is_arushi(update: Update) -> bool:
     return update.effective_chat.id == ARUSHI_CHAT_ID
 
 
 def is_ankush(update: Update) -> bool:
-    return update.effective_chat.id == ANKUSH_CHAT_ID
+    incoming = update.effective_chat.id
+    logger.info(f"is_ankush check: incoming={incoming} (type={type(incoming)}), expected={ANKUSH_CHAT_ID} (type={type(ANKUSH_CHAT_ID)}), match={incoming == ANKUSH_CHAT_ID}")
+    return incoming == ANKUSH_CHAT_ID
 
 
 def parse_deadline(deadline_text: str) -> datetime | None:
