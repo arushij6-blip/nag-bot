@@ -74,7 +74,8 @@ def parse_deadline(deadline_text: str) -> datetime | None:
         h, m = time_suffix or (21, 0)
         return (datetime.now() + timedelta(days=1)).replace(hour=h, minute=m, second=0, microsecond=0)
     if deadline_text == "tonight":
-        return datetime.now().replace(hour=22, minute=0, second=0, microsecond=0)
+        h, m = time_suffix or (22, 0)
+        return datetime.now().replace(hour=h, minute=m, second=0, microsecond=0)
 
     day_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
     if deadline_text in day_names:
