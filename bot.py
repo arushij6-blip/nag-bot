@@ -36,17 +36,10 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-raw_arushi = os.getenv("ARUSHI_CHAT_ID")
-raw_ankush = os.getenv("ANKUSH_CHAT_ID")
-logger.info(f"RAW env vars: ARUSHI_CHAT_ID={raw_arushi!r}, ANKUSH_CHAT_ID={raw_ankush!r}")
-logger.info(f"All CHAT/ANKUSH env vars: {[(k,v) for k,v in os.environ.items() if 'CHAT' in k or 'ANKUSH' in k]}")
-
-ARUSHI_CHAT_ID = int(raw_arushi or "0")
-ANKUSH_CHAT_ID = int(raw_ankush or "0")
+ARUSHI_CHAT_ID = int(os.getenv("ARUSHI_CHAT_ID") or "0")
+ANKUSH_CHAT_ID = int(os.getenv("ANKUSH_CHAT_ID") or "0")
 
 app_instance = None
-
-logger.info(f"Loaded ARUSHI_CHAT_ID={ARUSHI_CHAT_ID}, ANKUSH_CHAT_ID={ANKUSH_CHAT_ID}")
 
 
 def is_arushi(update: Update) -> bool:
@@ -54,9 +47,7 @@ def is_arushi(update: Update) -> bool:
 
 
 def is_ankush(update: Update) -> bool:
-    incoming = update.effective_chat.id
-    logger.info(f"is_ankush check: incoming={incoming} (type={type(incoming)}), expected={ANKUSH_CHAT_ID} (type={type(ANKUSH_CHAT_ID)}), match={incoming == ANKUSH_CHAT_ID}")
-    return incoming == ANKUSH_CHAT_ID
+    return update.effective_chat.id == ANKUSH_CHAT_ID
 
 
 def parse_deadline(deadline_text: str) -> datetime | None:
