@@ -105,11 +105,18 @@ def _migrate_db(conn):
     conn.commit()
 
 
-def add_task(description: str, deadline: datetime, assigned_to: int, created_by: int) -> dict:
+def add_task(
+    description: str,
+    deadline: datetime,
+    assigned_to: int,
+    created_by: int,
+    couple_id: int = 0,
+) -> dict:
     conn = get_connection()
     cursor = conn.execute(
-        "INSERT INTO tasks (description, deadline, assigned_to, created_by) VALUES (?, ?, ?, ?)",
-        (description, deadline, assigned_to, created_by),
+        "INSERT INTO tasks (description, deadline, assigned_to, created_by, couple_id) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (description, deadline, assigned_to, created_by, couple_id),
     )
     task_id = cursor.lastrowid
     conn.commit()
@@ -118,10 +125,17 @@ def add_task(description: str, deadline: datetime, assigned_to: int, created_by:
     return task
 
 
-def get_open_tasks(assigned_to: int = None, created_by: int = None) -> list[dict]:
+def get_open_tasks(
+    couple_id: int = None,
+    assigned_to: int = None,
+    created_by: int = None,
+) -> list[dict]:
     conn = get_connection()
     query = "SELECT * FROM tasks WHERE completed = 0"
     params = []
+    if couple_id is not None:
+        query += " AND couple_id = ?"
+        params.append(couple_id)
     if assigned_to is not None:
         query += " AND assigned_to = ?"
         params.append(assigned_to)
@@ -134,31 +148,47 @@ def get_open_tasks(assigned_to: int = None, created_by: int = None) -> list[dict
     return [dict(r) for r in rows]
 
 
-def get_tasks_needing_reminder() -> list[dict]:
+def get_tasks_needing_reminder(couple_id: int = None) -> list[dict]:
     conn = get_connection()
-    rows = conn.execute(
-        "SELECT * FROM tasks WHERE completed = 0 AND reminders_sent < 3 ORDER BY deadline ASC"
-    ).fetchall()
+    query = "SELECT * FROM tasks WHERE completed = 0 AND reminders_sent < 3"
+    params = []
+    if couple_id is not None:
+        query += " AND couple_id = ?"
+        params.append(couple_id)
+    query += " ORDER BY deadline ASC"
+    rows = conn.execute(query, params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
-def mark_reminder_sent(task_id: int):
+def mark_reminder_sent(task_id: int, couple_id: int = None):
     conn = get_connection()
-    conn.execute(
-        "UPDATE tasks SET reminders_sent = reminders_sent + 1 WHERE id = ?",
-        (task_id,),
-    )
+    if couple_id is not None:
+        conn.execute(
+            "UPDATE tasks SET reminders_sent = reminders_sent + 1 WHERE id = ? AND couple_id = ?",
+            (task_id, couple_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE tasks SET reminders_sent = reminders_sent + 1 WHERE id = ?",
+            (task_id,),
+        )
     conn.commit()
     conn.close()
 
 
-def complete_task(task_id: int):
+def complete_task(task_id: int, couple_id: int = None):
     conn = get_connection()
-    conn.execute(
-        "UPDATE tasks SET completed = 1, completed_at = ? WHERE id = ?",
-        (datetime.now(), task_id),
-    )
+    if couple_id is not None:
+        conn.execute(
+            "UPDATE tasks SET completed = 1, completed_at = ? WHERE id = ? AND couple_id = ?",
+            (datetime.now(), task_id, couple_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE tasks SET completed = 1, completed_at = ? WHERE id = ?",
+            (datetime.now(), task_id),
+        )
     conn.commit()
     conn.close()
 
@@ -269,10 +299,24 @@ def set_tone(couple_id: int, tone: str):
     conn.close()
 
 
-def find_task_by_description(query: str, assigned_to: int = None) -> dict | None:
+def get_task(task_id: int) -> dict | None:
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def find_task_by_description(
+    query: str,
+    couple_id: int = None,
+    assigned_to: int = None,
+) -> dict | None:
     conn = get_connection()
     sql = "SELECT * FROM tasks WHERE completed = 0"
     params = []
+    if couple_id is not None:
+        sql += " AND couple_id = ?"
+        params.append(couple_id)
     if assigned_to is not None:
         sql += " AND assigned_to = ?"
         params.append(assigned_to)
