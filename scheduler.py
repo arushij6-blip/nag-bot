@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 
-from database import get_tasks_needing_reminder, mark_reminder_sent
+from database import get_task, get_tasks_needing_reminder, mark_reminder_sent
 from sass_engine import generate_reminder
 
 scheduler = AsyncIOScheduler()
@@ -39,14 +39,11 @@ def schedule_task_reminders(task: dict):
 
     now = datetime.now()
 
-    assigned_to = task.get("assigned_to", 0)
-    created_by = task.get("created_by", 0)
-
     if deadline <= now:
         scheduler.add_job(
             _fire_reminder,
             trigger=DateTrigger(run_date=now + timedelta(seconds=10)),
-            args=[task["id"], task["description"], 3, deadline, assigned_to, created_by],
+            args=[task["id"]],
             id=f"reminder_{task['id']}_overdue",
             replace_existing=True,
         )
@@ -65,20 +62,34 @@ def schedule_task_reminders(task: dict):
         scheduler.add_job(
             _fire_reminder,
             trigger=DateTrigger(run_date=scheduled_time),
-            args=[task["id"], task["description"], i + 1, deadline, assigned_to, created_by],
+            args=[task["id"]],
             id=f"reminder_{task['id']}_{i + 1}",
             replace_existing=True,
         )
 
 
-async def _fire_reminder(task_id: int, description: str, reminder_number: int, deadline: datetime, assigned_to: int = 0, created_by: int = 0):
+async def _fire_reminder(task_id: int):
     if _send_reminder_callback is None:
         return
 
-    deadline_str = deadline.strftime("%B %d, %I:%M %p") if isinstance(deadline, datetime) else str(deadline)
-    message = generate_reminder(description, reminder_number, deadline_str)
-    mark_reminder_sent(task_id)
-    await _send_reminder_callback(task_id, message, reminder_number, assigned_to, created_by)
+    task = get_task(task_id)
+    if task is None or task["completed"]:
+        return
+
+    reminder_number = min(task["reminders_sent"] + 1, 3)
+    deadline = task["deadline"]
+    if isinstance(deadline, str):
+        deadline = datetime.fromisoformat(deadline)
+    deadline_str = deadline.strftime("%B %d, %I:%M %p")
+    message = generate_reminder(task["description"], reminder_number, deadline_str)
+    mark_reminder_sent(task_id, couple_id=task["couple_id"])
+    await _send_reminder_callback(
+        task_id,
+        message,
+        reminder_number,
+        task.get("assigned_to", 0),
+        task.get("created_by", 0),
+    )
 
 
 def cancel_task_reminders(task_id: int):
@@ -87,6 +98,9 @@ def cancel_task_reminders(task_id: int):
         job = scheduler.get_job(job_id)
         if job:
             scheduler.remove_job(job_id)
+    overdue_id = f"reminder_{task_id}_overdue"
+    if scheduler.get_job(overdue_id):
+        scheduler.remove_job(overdue_id)
 
 
 def reschedule_all_pending():
