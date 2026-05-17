@@ -19,6 +19,7 @@ from database import (
     get_open_tasks,
     find_task_by_description,
     complete_task,
+    backfill_tasks,
 )
 from scheduler import (
     scheduler,
@@ -48,6 +49,24 @@ def is_arushi(update: Update) -> bool:
 
 def is_ankush(update: Update) -> bool:
     return update.effective_chat.id == ANKUSH_CHAT_ID
+
+
+def is_participant(update: Update) -> bool:
+    return update.effective_chat.id in (ARUSHI_CHAT_ID, ANKUSH_CHAT_ID)
+
+
+def get_partner(chat_id: int) -> int:
+    if chat_id == ARUSHI_CHAT_ID:
+        return ANKUSH_CHAT_ID
+    return ARUSHI_CHAT_ID
+
+
+def get_name(chat_id: int) -> str:
+    if chat_id == ARUSHI_CHAT_ID:
+        return "Arushi"
+    if chat_id == ANKUSH_CHAT_ID:
+        return "Ankush"
+    return "Unknown"
 
 
 def parse_deadline(deadline_text: str) -> datetime | None:
@@ -151,21 +170,17 @@ def parse_deadline(deadline_text: str) -> datetime | None:
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    if chat_id == ARUSHI_CHAT_ID:
+    if is_participant(update):
+        name = get_name(chat_id)
+        partner = get_name(get_partner(chat_id))
         await update.message.reply_text(
-            "Hey Arushi! I'm your Nag Bot 🎯\n\n"
+            f"Hey {name}! I'm your Nag Bot 🎯\n\n"
             "Commands:\n"
-            "/add <task> by <deadline> — Add a task\n"
-            "/tasks — See all open tasks\n"
-            "/nag — Trigger an immediate reminder\n\n"
-            "Example: /add Fix the faucet by Friday"
-        )
-    elif chat_id == ANKUSH_CHAT_ID:
-        await update.message.reply_text(
-            "Hey! I'm here to help keep track of some household tasks 🏠\n\n"
-            "Commands:\n"
+            f"/add <task> by <deadline> — Add a task for {partner}\n"
             "/done <task> — Mark a task as done\n"
-            "/tasks — See your open tasks"
+            "/tasks — See all open tasks\n"
+            "/nag — Send immediate reminders\n\n"
+            "Example: /add Fix the faucet by Friday"
         )
     else:
         await update.message.reply_text(
@@ -175,8 +190,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_arushi(update):
-        await update.message.reply_text("Only Arushi can add tasks 😤")
+    if not is_participant(update):
+        await update.message.reply_text("You're not a participant in this bot 😤")
         return
 
     text = " ".join(context.args) if context.args else ""
@@ -203,26 +218,30 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    task = add_task(description, deadline)
+    chat_id = update.effective_chat.id
+    assigned_to = get_partner(chat_id)
+    task = add_task(description, deadline, assigned_to, chat_id)
     schedule_task_reminders(task)
 
+    partner_name = get_name(assigned_to)
     deadline_display = deadline.strftime("%B %d, %I:%M %p")
     await update.message.reply_text(
-        f"✅ Task added!\n\n"
+        f"✅ Task added for {partner_name}!\n\n"
         f"📋 {description}\n"
         f"⏰ Deadline: {deadline_display}\n\n"
-        f"I'll send 3 reminders with escalating sass. He won't know what hit him."
+        f"I'll send 3 reminders with escalating sass. They won't know what hit them."
     )
 
 
 async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_ankush(update):
-        await update.message.reply_text("This command is for Ankush!")
+    if not is_participant(update):
+        await update.message.reply_text("You're not a participant in this bot!")
         return
 
+    chat_id = update.effective_chat.id
     query = " ".join(context.args) if context.args else ""
     if not query:
-        tasks = get_open_tasks()
+        tasks = get_open_tasks(assigned_to=chat_id)
         if not tasks:
             await update.message.reply_text("No open tasks! You're free... for now 👀")
             return
@@ -230,10 +249,10 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Which one did you finish?\n\n{task_list}")
         return
 
-    task = find_task_by_description(query)
+    task = find_task_by_description(query, assigned_to=chat_id)
     if not task:
         await update.message.reply_text(
-            f"Can't find a task matching '{query}' 🤔\nUse /tasks to see open tasks."
+            f"Can't find a task matching '{query}' 🤔\nUse /tasks to see your tasks."
         )
         return
 
@@ -243,41 +262,55 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     completion_msg = generate_completion_message(task["description"])
     await update.message.reply_text(completion_msg)
 
-    if app_instance and ARUSHI_CHAT_ID:
+    creator = task["created_by"]
+    if app_instance and creator:
         await app_instance.bot.send_message(
-            chat_id=ARUSHI_CHAT_ID,
-            text=f"✅ Ankush completed: {task['description']}",
+            chat_id=creator,
+            text=f"✅ {get_name(chat_id)} completed: {task['description']}",
         )
 
 
 async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    tasks = get_open_tasks()
-    if not tasks:
-        if is_arushi(update):
-            await update.message.reply_text("No open tasks! Time to add some 😈")
-        else:
-            await update.message.reply_text("All clear! Nothing pending 🎉")
+    if not is_participant(update):
+        await update.message.reply_text("You're not a participant in this bot!")
         return
 
-    lines = []
-    for t in tasks:
-        deadline = t["deadline"]
-        if isinstance(deadline, str):
-            deadline = datetime.fromisoformat(deadline)
-        deadline_str = deadline.strftime("%b %d")
-        sass_level = "🟢" if t["reminders_sent"] == 0 else "🟡" if t["reminders_sent"] == 1 else "🔴"
-        lines.append(f"{sass_level} {t['description']} (by {deadline_str}) — {t['reminders_sent']}/3 reminders sent")
+    chat_id = update.effective_chat.id
+    my_tasks = get_open_tasks(assigned_to=chat_id)
+    created_tasks = get_open_tasks(created_by=chat_id)
 
-    header = "📋 Open tasks:\n\n" if is_arushi(update) else "📋 Your tasks:\n\n"
-    await update.message.reply_text(header + "\n".join(lines))
+    if not my_tasks and not created_tasks:
+        await update.message.reply_text("No open tasks! All clear 🎉")
+        return
+
+    def format_tasks(tasks):
+        lines = []
+        for t in tasks:
+            deadline = t["deadline"]
+            if isinstance(deadline, str):
+                deadline = datetime.fromisoformat(deadline)
+            deadline_str = deadline.strftime("%b %d")
+            sass_level = "🟢" if t["reminders_sent"] == 0 else "🟡" if t["reminders_sent"] == 1 else "🔴"
+            lines.append(f"{sass_level} {t['description']} (by {deadline_str}) — {t['reminders_sent']}/3 reminders sent")
+        return "\n".join(lines)
+
+    msg_parts = []
+    if my_tasks:
+        msg_parts.append(f"📋 Your tasks:\n\n{format_tasks(my_tasks)}")
+    if created_tasks:
+        partner = get_name(get_partner(chat_id))
+        msg_parts.append(f"📤 Tasks you gave {partner}:\n\n{format_tasks(created_tasks)}")
+
+    await update.message.reply_text("\n\n".join(msg_parts))
 
 
 async def cmd_nag(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_arushi(update):
+    if not is_participant(update):
         await update.message.reply_text("Nice try 😏")
         return
 
-    tasks = get_open_tasks()
+    chat_id = update.effective_chat.id
+    tasks = get_open_tasks(created_by=chat_id)
     if not tasks:
         await update.message.reply_text("No open tasks to nag about!")
         return
@@ -292,18 +325,18 @@ async def cmd_nag(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sass_level = min(task["reminders_sent"] + 1, 3)
         message = generate_reminder(task["description"], sass_level, deadline_str)
 
-        if app_instance and ANKUSH_CHAT_ID:
-            await app_instance.bot.send_message(chat_id=ANKUSH_CHAT_ID, text=message)
+        if app_instance and task["assigned_to"]:
+            await app_instance.bot.send_message(chat_id=task["assigned_to"], text=message)
 
     await update.message.reply_text(f"💅 Sent {len(tasks)} nag(s). You're welcome.")
 
 
-async def send_reminder_to_ankush(task_id: int, message: str, reminder_number: int):
-    if app_instance and ANKUSH_CHAT_ID:
-        await app_instance.bot.send_message(chat_id=ANKUSH_CHAT_ID, text=message)
-    if app_instance and ARUSHI_CHAT_ID and reminder_number == 3:
+async def send_reminder(task_id: int, message: str, reminder_number: int, assigned_to: int = 0, created_by: int = 0):
+    if app_instance and assigned_to:
+        await app_instance.bot.send_message(chat_id=assigned_to, text=message)
+    if app_instance and created_by and reminder_number == 3:
         await app_instance.bot.send_message(
-            chat_id=ARUSHI_CHAT_ID,
+            chat_id=created_by,
             text=f"📢 Final reminder sent for task #{task_id}. All 3 sass levels deployed.",
         )
 
@@ -322,13 +355,13 @@ async def post_init(application: Application):
 
     await application.bot.set_my_commands([
         BotCommand("start", "Get started"),
-        BotCommand("add", "Add a task (Arushi only)"),
+        BotCommand("add", "Add a task for your partner"),
         BotCommand("done", "Mark task as done"),
         BotCommand("tasks", "See open tasks"),
-        BotCommand("nag", "Send immediate reminders (Arushi only)"),
+        BotCommand("nag", "Send immediate reminders"),
     ])
 
-    set_reminder_callback(send_reminder_to_ankush)
+    set_reminder_callback(send_reminder)
     scheduler.start()
     reschedule_all_pending()
     logger.info("Bot started! Scheduler running.")
@@ -336,6 +369,7 @@ async def post_init(application: Application):
 
 def main():
     init_db()
+    backfill_tasks(ARUSHI_CHAT_ID, ANKUSH_CHAT_ID)
 
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
