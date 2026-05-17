@@ -73,37 +73,6 @@ def _migrate_db(conn):
         )
     conn.commit()
 
-    legacy_count = conn.execute("SELECT COUNT(*) FROM tasks WHERE couple_id = 0").fetchone()[0]
-    if legacy_count == 0:
-        return
-
-    arushi_id = int(os.getenv("ARUSHI_CHAT_ID") or "0")
-    ankush_id = int(os.getenv("ANKUSH_CHAT_ID") or "0")
-    if not (arushi_id and ankush_id):
-        return
-
-    existing = conn.execute(
-        "SELECT id FROM couples WHERE nagger_chat_id = ? AND naggee_chat_id = ?",
-        (arushi_id, ankush_id),
-    ).fetchone()
-    if existing:
-        legacy_couple_id = existing["id"]
-    else:
-        cursor = conn.execute(
-            "INSERT INTO couples (nagger_chat_id, naggee_chat_id, nagger_name, naggee_name) "
-            "VALUES (?, ?, ?, ?)",
-            (arushi_id, ankush_id, "Arushi", "Ankush"),
-        )
-        legacy_couple_id = cursor.lastrowid
-
-    conn.execute(
-        "UPDATE tasks SET assigned_to = ?, created_by = ? "
-        "WHERE assigned_to = 0 AND created_by = 0",
-        (ankush_id, arushi_id),
-    )
-    conn.execute("UPDATE tasks SET couple_id = ? WHERE couple_id = 0", (legacy_couple_id,))
-    conn.commit()
-
 
 def add_task(
     description: str,
