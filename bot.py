@@ -19,7 +19,6 @@ from database import (
     get_open_tasks,
     find_task_by_description,
     complete_task,
-    backfill_tasks,
 )
 from scheduler import (
     scheduler,
@@ -369,7 +368,6 @@ async def post_init(application: Application):
 
 def main():
     init_db()
-    backfill_tasks(ARUSHI_CHAT_ID, ANKUSH_CHAT_ID)
 
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 

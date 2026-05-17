@@ -18,6 +18,24 @@ def get_connection():
 def init_db():
     conn = get_connection()
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS couples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nagger_chat_id INTEGER UNIQUE NOT NULL,
+            naggee_chat_id INTEGER UNIQUE,
+            nagger_name TEXT,
+            naggee_name TEXT,
+            tone TEXT NOT NULL DEFAULT 'default',
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pairing_codes (
+            code TEXT PRIMARY KEY,
+            couple_id INTEGER NOT NULL REFERENCES couples(id) ON DELETE CASCADE,
+            expires_at TIMESTAMP NOT NULL
+        )
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             description TEXT NOT NULL,
@@ -27,9 +45,13 @@ def init_db():
             completed INTEGER NOT NULL DEFAULT 0,
             completed_at TIMESTAMP,
             assigned_to INTEGER NOT NULL DEFAULT 0,
-            created_by INTEGER NOT NULL DEFAULT 0
+            created_by INTEGER NOT NULL DEFAULT 0,
+            couple_id INTEGER NOT NULL DEFAULT 0 REFERENCES couples(id)
         )
     """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_couple_completed ON tasks(couple_id, completed)"
+    )
     conn.commit()
     _migrate_db(conn)
     conn.close()
@@ -40,17 +62,42 @@ def _migrate_db(conn):
     if "assigned_to" not in columns:
         conn.execute("ALTER TABLE tasks ADD COLUMN assigned_to INTEGER NOT NULL DEFAULT 0")
         conn.execute("ALTER TABLE tasks ADD COLUMN created_by INTEGER NOT NULL DEFAULT 0")
-        conn.commit()
+    if "couple_id" not in columns:
+        conn.execute(
+            "ALTER TABLE tasks ADD COLUMN couple_id INTEGER NOT NULL DEFAULT 0 REFERENCES couples(id)"
+        )
+    conn.commit()
 
+    legacy_count = conn.execute("SELECT COUNT(*) FROM tasks WHERE couple_id = 0").fetchone()[0]
+    if legacy_count == 0:
+        return
 
-def backfill_tasks(arushi_id: int, ankush_id: int):
-    conn = get_connection()
+    arushi_id = int(os.getenv("ARUSHI_CHAT_ID") or "0")
+    ankush_id = int(os.getenv("ANKUSH_CHAT_ID") or "0")
+    if not (arushi_id and ankush_id):
+        return
+
+    existing = conn.execute(
+        "SELECT id FROM couples WHERE nagger_chat_id = ? AND naggee_chat_id = ?",
+        (arushi_id, ankush_id),
+    ).fetchone()
+    if existing:
+        legacy_couple_id = existing["id"]
+    else:
+        cursor = conn.execute(
+            "INSERT INTO couples (nagger_chat_id, naggee_chat_id, nagger_name, naggee_name) "
+            "VALUES (?, ?, ?, ?)",
+            (arushi_id, ankush_id, "Arushi", "Ankush"),
+        )
+        legacy_couple_id = cursor.lastrowid
+
     conn.execute(
-        "UPDATE tasks SET assigned_to = ?, created_by = ? WHERE assigned_to = 0 AND created_by = 0",
+        "UPDATE tasks SET assigned_to = ?, created_by = ? "
+        "WHERE assigned_to = 0 AND created_by = 0",
         (ankush_id, arushi_id),
     )
+    conn.execute("UPDATE tasks SET couple_id = ? WHERE couple_id = 0", (legacy_couple_id,))
     conn.commit()
-    conn.close()
 
 
 def add_task(description: str, deadline: datetime, assigned_to: int, created_by: int) -> dict:
