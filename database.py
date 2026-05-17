@@ -1,7 +1,12 @@
 import os
+import secrets
 import sqlite3
-from datetime import datetime
+import string
+from datetime import datetime, timedelta
 from pathlib import Path
+
+PAIRING_CODE_TTL = timedelta(minutes=15)
+PAIRING_CODE_ALPHABET = string.ascii_uppercase + string.digits
 
 DATA_DIR = Path(os.getenv("DATA_DIR", Path(__file__).parent))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -154,6 +159,112 @@ def complete_task(task_id: int):
         "UPDATE tasks SET completed = 1, completed_at = ? WHERE id = ?",
         (datetime.now(), task_id),
     )
+    conn.commit()
+    conn.close()
+
+
+def create_couple(nagger_chat_id: int, nagger_name: str | None = None) -> int:
+    conn = get_connection()
+    cursor = conn.execute(
+        "INSERT INTO couples (nagger_chat_id, nagger_name) VALUES (?, ?)",
+        (nagger_chat_id, nagger_name),
+    )
+    conn.commit()
+    couple_id = cursor.lastrowid
+    conn.close()
+    return couple_id
+
+
+def get_couple_for_chat(chat_id: int) -> dict | None:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM couples WHERE nagger_chat_id = ? OR naggee_chat_id = ?",
+        (chat_id, chat_id),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    is_nagger = row["nagger_chat_id"] == chat_id
+    return {
+        "couple_id": row["id"],
+        "role": "nagger" if is_nagger else "naggee",
+        "self_chat_id": chat_id,
+        "self_name": row["nagger_name"] if is_nagger else row["naggee_name"],
+        "partner_chat_id": row["naggee_chat_id"] if is_nagger else row["nagger_chat_id"],
+        "partner_name": row["naggee_name"] if is_nagger else row["nagger_name"],
+        "tone": row["tone"],
+        "paired": row["naggee_chat_id"] is not None,
+    }
+
+
+def _generate_pairing_code() -> str:
+    return "".join(secrets.choice(PAIRING_CODE_ALPHABET) for _ in range(6))
+
+
+def create_pairing_code(couple_id: int) -> str:
+    conn = get_connection()
+    conn.execute("DELETE FROM pairing_codes WHERE couple_id = ?", (couple_id,))
+    expires_at = datetime.now() + PAIRING_CODE_TTL
+    for _ in range(10):
+        code = _generate_pairing_code()
+        try:
+            conn.execute(
+                "INSERT INTO pairing_codes (code, couple_id, expires_at) VALUES (?, ?, ?)",
+                (code, couple_id, expires_at),
+            )
+            conn.commit()
+            conn.close()
+            return code
+        except sqlite3.IntegrityError:
+            continue
+    conn.close()
+    raise RuntimeError("Could not generate a unique pairing code")
+
+
+def consume_pairing_code(code: str, naggee_chat_id: int, naggee_name: str | None = None) -> int | None:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT couple_id, expires_at FROM pairing_codes WHERE code = ?",
+        (code.upper(),),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return None
+    expires_at = row["expires_at"]
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if expires_at < datetime.now():
+        conn.execute("DELETE FROM pairing_codes WHERE code = ?", (code.upper(),))
+        conn.commit()
+        conn.close()
+        return None
+    couple_id = row["couple_id"]
+    couple = conn.execute("SELECT * FROM couples WHERE id = ?", (couple_id,)).fetchone()
+    if not couple or couple["nagger_chat_id"] == naggee_chat_id:
+        conn.close()
+        return None
+    conn.execute(
+        "UPDATE couples SET naggee_chat_id = ?, naggee_name = ? WHERE id = ?",
+        (naggee_chat_id, naggee_name, couple_id),
+    )
+    conn.execute("DELETE FROM pairing_codes WHERE couple_id = ?", (couple_id,))
+    conn.commit()
+    conn.close()
+    return couple_id
+
+
+def delete_couple(couple_id: int):
+    conn = get_connection()
+    conn.execute("DELETE FROM tasks WHERE couple_id = ?", (couple_id,))
+    conn.execute("DELETE FROM pairing_codes WHERE couple_id = ?", (couple_id,))
+    conn.execute("DELETE FROM couples WHERE id = ?", (couple_id,))
+    conn.commit()
+    conn.close()
+
+
+def set_tone(couple_id: int, tone: str):
+    conn = get_connection()
+    conn.execute("UPDATE couples SET tone = ? WHERE id = ?", (tone, couple_id))
     conn.commit()
     conn.close()
 
