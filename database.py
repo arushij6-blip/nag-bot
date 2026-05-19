@@ -5,6 +5,8 @@ import string
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from encryption import encrypt, decrypt
+
 PAIRING_CODE_TTL = timedelta(minutes=15)
 PAIRING_CODE_ALPHABET = string.ascii_uppercase + string.digits
 
@@ -74,6 +76,19 @@ def _migrate_db(conn):
     conn.commit()
 
 
+def _decrypt_task(row) -> dict:
+    t = dict(row)
+    t["description"] = decrypt(t["description"])
+    return t
+
+
+def _decrypt_couple(row) -> dict:
+    d = dict(row)
+    d["nagger_name"] = decrypt(d.get("nagger_name"))
+    d["naggee_name"] = decrypt(d.get("naggee_name"))
+    return d
+
+
 def add_task(
     description: str,
     deadline: datetime,
@@ -85,11 +100,11 @@ def add_task(
     cursor = conn.execute(
         "INSERT INTO tasks (description, deadline, assigned_to, created_by, couple_id) "
         "VALUES (?, ?, ?, ?, ?)",
-        (description, deadline, assigned_to, created_by, couple_id),
+        (encrypt(description), deadline, assigned_to, created_by, couple_id),
     )
     task_id = cursor.lastrowid
     conn.commit()
-    task = dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone())
+    task = _decrypt_task(conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone())
     conn.close()
     return task
 
@@ -114,7 +129,7 @@ def get_open_tasks(
     query += " ORDER BY deadline ASC"
     rows = conn.execute(query, params).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    return [_decrypt_task(r) for r in rows]
 
 
 def get_tasks_needing_reminder(couple_id: int = None) -> list[dict]:
@@ -127,7 +142,7 @@ def get_tasks_needing_reminder(couple_id: int = None) -> list[dict]:
     query += " ORDER BY deadline ASC"
     rows = conn.execute(query, params).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    return [_decrypt_task(r) for r in rows]
 
 
 def mark_reminder_sent(task_id: int, couple_id: int = None):
@@ -166,7 +181,7 @@ def create_couple(nagger_chat_id: int, nagger_name: str | None = None) -> int:
     conn = get_connection()
     cursor = conn.execute(
         "INSERT INTO couples (nagger_chat_id, nagger_name) VALUES (?, ?)",
-        (nagger_chat_id, nagger_name),
+        (nagger_chat_id, encrypt(nagger_name)),
     )
     conn.commit()
     couple_id = cursor.lastrowid
@@ -183,6 +198,7 @@ def get_couple_for_chat(chat_id: int) -> dict | None:
     conn.close()
     if not row:
         return None
+    row = _decrypt_couple(row)
     is_nagger = row["nagger_chat_id"] == chat_id
     return {
         "couple_id": row["id"],
@@ -244,7 +260,7 @@ def consume_pairing_code(code: str, naggee_chat_id: int, naggee_name: str | None
         return None
     conn.execute(
         "UPDATE couples SET naggee_chat_id = ?, naggee_name = ? WHERE id = ?",
-        (naggee_chat_id, naggee_name, couple_id),
+        (naggee_chat_id, encrypt(naggee_name), couple_id),
     )
     conn.execute("DELETE FROM pairing_codes WHERE couple_id = ?", (couple_id,))
     conn.commit()
@@ -272,7 +288,7 @@ def get_task(task_id: int) -> dict | None:
     conn = get_connection()
     row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     conn.close()
-    return dict(row) if row else None
+    return _decrypt_task(row) if row else None
 
 
 def find_task_by_description(
@@ -294,6 +310,7 @@ def find_task_by_description(
     conn.close()
     query_lower = query.lower().strip()
     for row in rows:
-        if query_lower in row["description"].lower():
-            return dict(row)
+        task = _decrypt_task(row)
+        if query_lower in task["description"].lower():
+            return task
     return None
