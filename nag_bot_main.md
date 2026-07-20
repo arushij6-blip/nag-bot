@@ -34,10 +34,11 @@ A sassy Telegram bot that lets two participants (currently Arushi and Ankush) as
 
 | File | Purpose |
 |---|---|
-| `bot.py` | Telegram handlers, deadline parsing, command authorization, reminder callback |
+| `bot.py` | Telegram handlers, deadline parsing, command authorization, reminder + meal callbacks |
 | `database.py` | SQLite CRUD + schema migration |
-| `scheduler.py` | APScheduler setup + reminder time computation |
+| `scheduler.py` | APScheduler setup + reminder time computation + one-shot meal jobs |
 | `sass_engine.py` | Sassy message template pools |
+| `menu_api.py` | Optional aiohttp HTTP endpoint (`POST /menu`) for external tools to push meal reminders |
 | `requirements.txt` | `python-telegram-bot==21.6`, `apscheduler==3.10.4`, `python-dotenv==1.0.1` |
 | `Dockerfile`, `Procfile`, `nixpacks.toml` | Container/cloud deploy |
 | `com.arushi.nagbot.plist` | macOS launchd autostart |
@@ -88,6 +89,19 @@ There is no frontend. All user interaction is via the Telegram client.
 | `couple_id` | INTEGER NOT NULL REFERENCES couples(id) | Tenant scope |
 
 Index: `idx_tasks_couple_completed` on `(couple_id, completed)`.
+
+**`meal_reminders` table** (single-fire reminders from the menu API — distinct from the 3-nag `tasks`):
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK AUTOINCREMENT | |
+| `couple_id` | INTEGER NOT NULL REFERENCES couples(id) ON DELETE CASCADE | Tenant scope |
+| `description` | TEXT NOT NULL | Encrypted, e.g. `Breakfast: Poha` |
+| `remind_at` | TIMESTAMP NOT NULL | Exact fire time (naive local) |
+| `sent` | INTEGER NOT NULL DEFAULT 0 | 0/1 boolean |
+| `created_at` | TIMESTAMP DEFAULT CURRENT_TIMESTAMP | |
+
+Index: `idx_meals_couple_sent` on `(couple_id, sent)`. Fires **once** at `remind_at` to **both** partners; no escalation. Rebuilt on boot by `reschedule_all_meals()`.
 
 **Migration:** `_migrate_db()` in `database.py` adds any missing columns on upgraded databases. The historical legacy-couple backfill (which seeded the original Arushi/Ankush pair from env vars) was retired once production had migrated; fresh installs go straight to the multi-tenant schema.
 
@@ -141,6 +155,10 @@ Loaded via `python-dotenv` from `.env`:
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | yes | From BotFather |
 | `DATA_DIR` | no | Override DB location (defaults to project root) |
+| `DB_ENCRYPTION_KEY` | no | Fernet key; encrypts names + task/meal descriptions at rest |
+| `MENU_API_TOKEN` | no | Bearer token for the menu HTTP API. **If unset, the API does not start** (no unauthenticated ingestion). |
+| `MENU_API_HOST` | no | Bind host for the menu API (default `0.0.0.0`) |
+| `MENU_API_PORT` | no | Bind port for the menu API (default `8080`) |
 
 Bootstrapping: any user who DMs the bot can `/start` to create a couple and get a pairing code, then send the code to their partner who runs `/join <code>`. No env-based allowlist anymore.
 
@@ -170,6 +188,23 @@ Only one instance should run at a time — Telegram long-polling does not multip
 **Onboarding a new couple:** Either partner DMs the bot and sends `/start`. The bot replies with a 6-character pairing code (15-minute TTL). The other partner DMs the bot and sends `/join <code>`. Both sides get a confirmation and can begin `/add`-ing tasks. To rotate the code, re-send `/start`.
 
 **Adding more than 2 users per couple (would require code changes):** Currently each `couple` row has exactly two seats (`nagger_chat_id`, `naggee_chat_id`). For groups, the schema would need a `couple_members` table and the `assigned_to`/`created_by` routing in `/add` would need a target selector. Roadmap is sketched in `nag bot.md`.
+
+**Connecting an external weekly-menu tool:** Set `MENU_API_TOKEN` and the bot exposes `POST /menu` (aiohttp, same event loop as the poller). An off-host menu generator pushes a week's plan and the bot fires a single reminder at each meal time to **both** partners. Payload:
+
+```json
+{
+  "chat_id": 123456789,        // either partner's Telegram chat id — locates the couple
+  "replace": true,             // optional: clear future unsent meals first (idempotent weekly re-ingest)
+  "meals": [
+    {"at": "2026-07-20 07:00", "text": "Breakfast: Poha"},
+    {"at": "2026-07-20 13:00", "text": "Lunch: Bhindi + Rajma"},
+    {"at": "2026-07-20 17:00", "text": "Snack: Upma"},
+    {"at": "2026-07-20 20:00", "text": "Dinner: Pasta"}
+  ]
+}
+```
+
+Auth: `Authorization: Bearer <MENU_API_TOKEN>` (or `X-API-Token`). `at` accepts ISO datetimes; fuzzy forms (`monday 7am`) also work via `parse_deadline`. Times are naive local. Past-due meals are stored `sent=1` and skipped. `GET /health` is unauthenticated. Response: `{ok, couple_id, scheduled, skipped_past}`. Meal reminders are separate from the 3-nag `tasks` flow — they don't appear in `/tasks` or `/done`.
 
 **Tuning sass:** Edit template lists in `sass_engine.py`. Three lists for reminders (`LEVEL_1`, `LEVEL_2`, `LEVEL_3`) plus completion. `{task}` and `{deadline}` are the only template placeholders.
 
@@ -215,5 +250,6 @@ Only one instance should run at a time — Telegram long-polling does not multip
 
 ## 15. Change Log
 
+- **Menu integration / one-shot reminders** — New `meal_reminders` table and a single-fire scheduler path (`schedule_meal_reminder`/`_fire_meal`/`reschedule_all_meals` in `scheduler.py`) that pings **both** partners once at an exact time, separate from the 3-nag `tasks` model. Added `menu_api.py`: a token-gated aiohttp `POST /menu` endpoint (started in `post_init`, stopped in `post_shutdown`) so an external weekly-menu tool can push a week of meals. New env vars `MENU_API_TOKEN` (required to enable the API), `MENU_API_HOST`, `MENU_API_PORT`. `aiohttp` added to `requirements.txt`.
 - **Multi-tenant rework** — Any pair of Telegram users can now self-onboard. New `couples` and `pairing_codes` tables; `tasks` gained `couple_id` with all queries scoped accordingly. Added `/start`/`/join`/`/leave` flow. Removed `ARUSHI_CHAT_ID` / `ANKUSH_CHAT_ID` env-var allowlist; auth now via `resolve_caller` over the `couples` table. Scheduler `_fire_reminder` re-reads the task at fire time and gracefully no-ops on deleted/completed rows. All Telegram sends wrapped in `safe_send` to swallow `Forbidden` and notify the partner. Sass pools expanded from 8/10/12/10 to 50/50/50/50.
 - **Bidirectional task assignment** — Both participants can `/add`, `/done`, `/tasks`, and `/nag`. Added `assigned_to`/`created_by` columns and a migration + backfill path. Reminder routing is dynamic (resolved from task state) instead of hardcoded to Ankush. `send_reminder_to_ankush` renamed to `send_reminder`.

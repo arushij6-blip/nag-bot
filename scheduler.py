@@ -2,17 +2,30 @@ from datetime import datetime, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 
-from database import get_task, get_tasks_needing_reminder, mark_reminder_sent
+from database import (
+    get_task,
+    get_tasks_needing_reminder,
+    mark_reminder_sent,
+    get_meal_reminder,
+    get_pending_meal_reminders,
+    mark_meal_sent,
+)
 from sass_engine import generate_reminder
 
 scheduler = AsyncIOScheduler()
 
 _send_reminder_callback = None
+_send_meal_callback = None
 
 
 def set_reminder_callback(callback):
     global _send_reminder_callback
     _send_reminder_callback = callback
+
+
+def set_meal_callback(callback):
+    global _send_meal_callback
+    _send_meal_callback = callback
 
 
 def compute_reminder_times(created_at: datetime, deadline: datetime) -> list[datetime]:
@@ -107,3 +120,55 @@ def reschedule_all_pending():
     tasks = get_tasks_needing_reminder()
     for task in tasks:
         schedule_task_reminders(task)
+
+
+# --- Meal reminders: single one-shot ping at an exact time --------------------
+
+def _meal_job_id(meal_id: int) -> str:
+    return f"meal_{meal_id}"
+
+
+def schedule_meal_reminder(meal: dict):
+    """Register a single-fire job for a meal reminder.
+
+    Past-due (already elapsed) reminders are marked sent and skipped rather than
+    fired late — nobody wants a "Breakfast: Poha" ping at dinner time.
+    """
+    remind_at = meal["remind_at"]
+    if isinstance(remind_at, str):
+        remind_at = datetime.fromisoformat(remind_at)
+
+    if remind_at <= datetime.now():
+        mark_meal_sent(meal["id"])
+        return
+
+    scheduler.add_job(
+        _fire_meal,
+        trigger=DateTrigger(run_date=remind_at),
+        args=[meal["id"]],
+        id=_meal_job_id(meal["id"]),
+        replace_existing=True,
+    )
+
+
+async def _fire_meal(meal_id: int):
+    if _send_meal_callback is None:
+        return
+
+    meal = get_meal_reminder(meal_id)
+    if meal is None or meal["sent"]:
+        return
+
+    mark_meal_sent(meal_id)
+    await _send_meal_callback(meal["couple_id"], meal["description"])
+
+
+def cancel_meal_reminder(meal_id: int):
+    job_id = _meal_job_id(meal_id)
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+
+
+def reschedule_all_meals():
+    for meal in get_pending_meal_reminders():
+        schedule_meal_reminder(meal)

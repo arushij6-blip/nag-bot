@@ -21,6 +21,7 @@ from database import (
     find_task_by_description,
     complete_task,
     get_couple_for_chat,
+    get_couple_chat_ids,
     create_couple,
     create_pairing_code,
     consume_pairing_code,
@@ -29,11 +30,14 @@ from database import (
 from scheduler import (
     scheduler,
     set_reminder_callback,
+    set_meal_callback,
     schedule_task_reminders,
     cancel_task_reminders,
     reschedule_all_pending,
+    reschedule_all_meals,
 )
 from sass_engine import generate_completion_message
+from menu_api import start_menu_api, stop_menu_api
 
 load_dotenv()
 
@@ -47,6 +51,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 app_instance = None
+menu_api_runner = None
 
 
 async def safe_send(chat_id: int, text: str) -> bool:
@@ -436,6 +441,16 @@ async def send_reminder(task_id: int, message: str, reminder_number: int, assign
         )
 
 
+async def send_meal_reminder(couple_id: int, description: str):
+    chat_ids = get_couple_chat_ids(couple_id)
+    if not chat_ids:
+        return
+    message = f"🍽️ {description}"
+    for chat_id in chat_ids:
+        if chat_id:
+            await safe_send(chat_id, message)
+
+
 async def handle_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     couple = resolve_caller(update)
     if not couple:
@@ -459,15 +474,30 @@ async def post_init(application: Application):
     ])
 
     set_reminder_callback(send_reminder)
+    set_meal_callback(send_meal_reminder)
     scheduler.start()
     reschedule_all_pending()
+    reschedule_all_meals()
+
+    global menu_api_runner
+    menu_api_runner = await start_menu_api(parse_deadline)
     logger.info("Bot started! Scheduler running.")
+
+
+async def post_shutdown(application: Application):
+    await stop_menu_api(menu_api_runner)
 
 
 def main():
     init_db()
 
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
+    application = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
 
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("join", cmd_join))

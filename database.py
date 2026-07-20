@@ -59,6 +59,19 @@ def init_db():
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_couple_completed ON tasks(couple_id, completed)"
     )
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS meal_reminders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            couple_id INTEGER NOT NULL REFERENCES couples(id) ON DELETE CASCADE,
+            description TEXT NOT NULL,
+            remind_at TIMESTAMP NOT NULL,
+            sent INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_meals_couple_sent ON meal_reminders(couple_id, sent)"
+    )
     conn.commit()
     _migrate_db(conn)
     conn.close()
@@ -212,6 +225,19 @@ def get_couple_for_chat(chat_id: int) -> dict | None:
     }
 
 
+def get_couple_chat_ids(couple_id: int) -> tuple[int, int | None] | None:
+    """Return (nagger_chat_id, naggee_chat_id) for a couple, or None if missing."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT nagger_chat_id, naggee_chat_id FROM couples WHERE id = ?",
+        (couple_id,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return (row["nagger_chat_id"], row["naggee_chat_id"])
+
+
 def _generate_pairing_code() -> str:
     return "".join(secrets.choice(PAIRING_CODE_ALPHABET) for _ in range(6))
 
@@ -271,6 +297,7 @@ def consume_pairing_code(code: str, naggee_chat_id: int, naggee_name: str | None
 def delete_couple(couple_id: int):
     conn = get_connection()
     conn.execute("DELETE FROM tasks WHERE couple_id = ?", (couple_id,))
+    conn.execute("DELETE FROM meal_reminders WHERE couple_id = ?", (couple_id,))
     conn.execute("DELETE FROM pairing_codes WHERE couple_id = ?", (couple_id,))
     conn.execute("DELETE FROM couples WHERE id = ?", (couple_id,))
     conn.commit()
@@ -314,3 +341,69 @@ def find_task_by_description(
         if query_lower in task["description"].lower():
             return task
     return None
+
+
+def _decrypt_meal(row) -> dict:
+    m = dict(row)
+    m["description"] = decrypt(m["description"])
+    return m
+
+
+def add_meal_reminder(couple_id: int, description: str, remind_at: datetime) -> dict:
+    conn = get_connection()
+    cursor = conn.execute(
+        "INSERT INTO meal_reminders (couple_id, description, remind_at) VALUES (?, ?, ?)",
+        (couple_id, encrypt(description), remind_at),
+    )
+    meal_id = cursor.lastrowid
+    conn.commit()
+    row = conn.execute("SELECT * FROM meal_reminders WHERE id = ?", (meal_id,)).fetchone()
+    conn.close()
+    return _decrypt_meal(row)
+
+
+def get_meal_reminder(meal_id: int) -> dict | None:
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM meal_reminders WHERE id = ?", (meal_id,)).fetchone()
+    conn.close()
+    return _decrypt_meal(row) if row else None
+
+
+def get_pending_meal_reminders(couple_id: int = None) -> list[dict]:
+    conn = get_connection()
+    query = "SELECT * FROM meal_reminders WHERE sent = 0"
+    params = []
+    if couple_id is not None:
+        query += " AND couple_id = ?"
+        params.append(couple_id)
+    query += " ORDER BY remind_at ASC"
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [_decrypt_meal(r) for r in rows]
+
+
+def mark_meal_sent(meal_id: int):
+    conn = get_connection()
+    conn.execute("UPDATE meal_reminders SET sent = 1 WHERE id = ?", (meal_id,))
+    conn.commit()
+    conn.close()
+
+
+def clear_future_meal_reminders(couple_id: int, after: datetime = None) -> list[int]:
+    """Delete not-yet-sent meal reminders for a couple (optionally only those at/after `after`).
+
+    Returns the ids that were removed so their scheduler jobs can be cancelled.
+    """
+    conn = get_connection()
+    query = "SELECT id FROM meal_reminders WHERE couple_id = ? AND sent = 0"
+    params = [couple_id]
+    if after is not None:
+        query += " AND remind_at >= ?"
+        params.append(after)
+    ids = [row["id"] for row in conn.execute(query, params).fetchall()]
+    if ids:
+        placeholders = ",".join("?" for _ in ids)
+        conn.execute(f"DELETE FROM meal_reminders WHERE id IN ({placeholders})", ids)
+        conn.commit()
+    conn.close()
+    return ids
