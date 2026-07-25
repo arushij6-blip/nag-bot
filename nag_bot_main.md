@@ -123,6 +123,8 @@ Anyone can DM the bot. Users self-onboard into couples via `/start` + `/join`. O
 
 Unknown chats get a "send /start to begin" nudge. Pairing codes expire after 15 minutes (`PAIRING_CODE_TTL` in `database.py`).
 
+**Free-text (non-command) messages:** `handle_freetext` in `bot.py`. When `PENSIEVE_INBOX_URL` is set and the sender is paired, the raw text is forwarded to Pensieve's `/inbox` (the household-OS data-entry path) and the bot acks with "📥 Got it". When Pensieve is not configured, behavior is unchanged: paired users get "I don't understand that", unknown chats get the /start nudge. Forwarding never raises — a down Pensieve just yields a "try again" reply.
+
 **Deadline parser** (`parse_deadline` in `bot.py`) supports ~20 formats: relative (`today`, `tomorrow`, `tonight`, with optional time like `today 9PM`), weekday names (`monday`, `wednesday 8AM`), offsets (`3 days`, `5 hours`), and explicit dates (`13 April`, `13 April 9AM`, `2026-05-13 09:00`, `13/05/2026 09:00`). Default time when only a date is given: 21:00.
 
 ---
@@ -156,9 +158,13 @@ Loaded via `python-dotenv` from `.env`:
 | `TELEGRAM_BOT_TOKEN` | yes | From BotFather |
 | `DATA_DIR` | no | Override DB location (defaults to project root) |
 | `DB_ENCRYPTION_KEY` | no | Fernet key; encrypts names + task/meal descriptions at rest |
-| `MENU_API_TOKEN` | no | Bearer token for the menu HTTP API. **If unset, the API does not start** (no unauthenticated ingestion). |
+| `MENU_API_TOKEN` | no | Bearer token for the HTTP API. **If unset, the API does not start.** Gates the whole HTTP layer — both `/menu` ingestion and `/deliver` (outbound to the user). |
 | `MENU_API_HOST` | no | Bind host for the menu API (default `0.0.0.0`) |
 | `MENU_API_PORT` | no | Bind port for the menu API (default `8080`) |
+| `PENSIEVE_INBOX_URL` | no | Base URL of Pensieve's inbox (e.g. `http://localhost:8090`). **If unset, message forwarding is disabled** and free text falls back to the "I don't understand" reply. |
+| `PENSIEVE_INBOX_TOKEN` | no | Bearer token sent when forwarding messages to Pensieve's `/inbox`. |
+| `PENSIEVE_INBOX_TIMEOUT` | no | Seconds to wait when forwarding (default `8`). |
+| `PENSIEVE_DELIVERY_CHAT_ID` | no | Default target chat for `POST /deliver` when the payload carries no `chat_id`/`couple_id`. |
 
 Bootstrapping: any user who DMs the bot can `/start` to create a couple and get a pairing code, then send the code to their partner who runs `/join <code>`. No env-based allowlist anymore.
 
@@ -178,7 +184,8 @@ Only one instance should run at a time — Telegram long-polling does not multip
 
 ## 10. Third-Party Integrations
 
-- **Telegram Bot API** — sole external dependency. All user I/O.
+- **Telegram Bot API** — sole external dependency for user I/O.
+- **Pensieve (household OS)** — optional. Nag Bot is Pensieve's Telegram edge: it forwards captured free text to Pensieve's `/inbox` (`pensieve_client.py`) and exposes `POST /deliver` (in `menu_api.py`) so Pensieve can send reminders/approvals back to the user. Both directions are token-gated and fully optional — with the `PENSIEVE_*` vars unset, Nag Bot runs standalone exactly as before.
 - No analytics, no logging service, no DB hosting. Everything is local-process.
 
 ---
@@ -250,6 +257,7 @@ Auth: `Authorization: Bearer <MENU_API_TOKEN>` (or `X-API-Token`). `at` accepts 
 
 ## 15. Change Log
 
+- **Pensieve integration (household OS edge)** — Nag Bot becomes the Telegram capture + delivery edge for Pensieve. New `pensieve_client.py` forwards paired users' free-text messages to Pensieve's `/inbox` (`handle_freetext` replaces `handle_unknown`; forwarding is gated on `PENSIEVE_INBOX_URL` and never raises). `menu_api.py` gains a token-gated `POST /deliver` endpoint so Pensieve can push messages back to the user, with target resolution by `chat_id` → `couple_id` → `PENSIEVE_DELIVERY_CHAT_ID`; `start_menu_api`/`create_menu_app` now take a `send_callback` (the bot passes `safe_send`). All existing behavior is unchanged when the `PENSIEVE_*` vars are unset. Added `tests/test_pensieve_integration.py` (plain-python smoke + regression tests).
 - **Menu integration / one-shot reminders** — New `meal_reminders` table and a single-fire scheduler path (`schedule_meal_reminder`/`_fire_meal`/`reschedule_all_meals` in `scheduler.py`) that pings **both** partners once at an exact time, separate from the 3-nag `tasks` model. Added `menu_api.py`: a token-gated aiohttp `POST /menu` endpoint (started in `post_init`, stopped in `post_shutdown`) so an external weekly-menu tool can push a week of meals. New env vars `MENU_API_TOKEN` (required to enable the API), `MENU_API_HOST`, `MENU_API_PORT`. `aiohttp` added to `requirements.txt`.
 - **Multi-tenant rework** — Any pair of Telegram users can now self-onboard. New `couples` and `pairing_codes` tables; `tasks` gained `couple_id` with all queries scoped accordingly. Added `/start`/`/join`/`/leave` flow. Removed `ARUSHI_CHAT_ID` / `ANKUSH_CHAT_ID` env-var allowlist; auth now via `resolve_caller` over the `couples` table. Scheduler `_fire_reminder` re-reads the task at fire time and gracefully no-ops on deleted/completed rows. All Telegram sends wrapped in `safe_send` to swallow `Forbidden` and notify the partner. Sass pools expanded from 8/10/12/10 to 50/50/50/50.
 - **Bidirectional task assignment** — Both participants can `/add`, `/done`, `/tasks`, and `/nag`. Added `assigned_to`/`created_by` columns and a migration + backfill path. Reminder routing is dynamic (resolved from task state) instead of hardcoded to Ankush. `send_reminder_to_ankush` renamed to `send_reminder`.

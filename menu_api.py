@@ -32,6 +32,7 @@ from aiohttp import web
 
 from database import (
     get_couple_for_chat,
+    get_couple_chat_ids,
     add_meal_reminder,
     clear_future_meal_reminders,
 )
@@ -61,7 +62,7 @@ def _default_parse_at(value: str) -> datetime | None:
     return None
 
 
-def create_menu_app(deadline_parser=None, token: str = None) -> web.Application:
+def create_menu_app(deadline_parser=None, token: str = None, send_callback=None) -> web.Application:
     def parse_at(value: str) -> datetime | None:
         dt = _default_parse_at(value)
         if dt is None and deadline_parser is not None:
@@ -163,26 +164,79 @@ def create_menu_app(deadline_parser=None, token: str = None) -> web.Application:
             "skipped_past": skipped_past,
         })
 
+    async def post_deliver(request):
+        """Pensieve pushes a message here to reach the user via Telegram.
+
+        Target resolution (first match wins):
+          1. `chat_id` in the payload — send to that chat.
+          2. `couple_id` in the payload — send to both partners.
+          3. `PENSIEVE_DELIVERY_CHAT_ID` env — a default single target.
+        """
+        if send_callback is None:
+            return web.json_response({"error": "delivery not available"}, status=503)
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            return web.json_response({"error": "text is required"}, status=400)
+
+        targets = []
+        if payload.get("chat_id") is not None:
+            try:
+                targets = [int(payload["chat_id"])]
+            except (TypeError, ValueError):
+                return web.json_response({"error": "chat_id must be an integer"}, status=400)
+        elif payload.get("couple_id") is not None:
+            chat_ids = get_couple_chat_ids(int(payload["couple_id"]))
+            if not chat_ids:
+                return web.json_response({"error": "no couple found for couple_id"}, status=404)
+            targets = [c for c in chat_ids if c]
+        else:
+            default_chat = os.getenv("PENSIEVE_DELIVERY_CHAT_ID")
+            if default_chat:
+                targets = [int(default_chat)]
+
+        if not targets:
+            return web.json_response(
+                {"error": "no delivery target (provide chat_id or couple_id, "
+                          "or set PENSIEVE_DELIVERY_CHAT_ID)"},
+                status=400,
+            )
+
+        sent = 0
+        for chat_id in targets:
+            if await send_callback(chat_id, text):
+                sent += 1
+        return web.json_response({"ok": sent > 0, "sent": sent, "targets": len(targets)})
+
     app = web.Application(middlewares=[auth_middleware])
     app.router.add_get("/health", health)
     app.router.add_post("/menu", post_menu)
+    app.router.add_post("/deliver", post_deliver)
     return app
 
 
-async def start_menu_api(deadline_parser=None):
+async def start_menu_api(deadline_parser=None, send_callback=None):
     """Start the menu HTTP server on the running loop. Returns the AppRunner
-    (or None if disabled). Requires MENU_API_TOKEN to be set."""
+    (or None if disabled). Requires MENU_API_TOKEN to be set — this token gates the
+    whole HTTP layer (`/menu` ingestion and `/deliver` outbound to the user).
+
+    `send_callback(chat_id, text) -> bool` is used by `/deliver` to reach the user;
+    pass the bot's `safe_send`."""
     token = os.getenv("MENU_API_TOKEN")
     if not token:
         logger.warning(
-            "MENU_API_TOKEN not set — menu HTTP API disabled "
-            "(refusing to expose an unauthenticated ingestion endpoint)."
+            "MENU_API_TOKEN not set — HTTP API disabled "
+            "(refusing to expose an unauthenticated endpoint)."
         )
         return None
 
     host = os.getenv("MENU_API_HOST", "0.0.0.0")
     port = int(os.getenv("MENU_API_PORT", "8080"))
-    app = create_menu_app(deadline_parser, token=token)
+    app = create_menu_app(deadline_parser, token=token, send_callback=send_callback)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
