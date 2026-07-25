@@ -38,6 +38,7 @@ from scheduler import (
 )
 from sass_engine import generate_completion_message
 from menu_api import start_menu_api, stop_menu_api
+import pensieve_client
 
 load_dotenv()
 
@@ -451,11 +452,28 @@ async def send_meal_reminder(couple_id: int, description: str):
             await safe_send(chat_id, message)
 
 
-async def handle_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_freetext(update: Update, context: ContextTypes.DEFAULT_TYPE):
     couple = resolve_caller(update)
     if not couple:
         await update.message.reply_text("Send /start to begin.")
         return
+
+    # Household-OS capture: forward a paired user's free text to Pensieve's inbox.
+    # Only when Pensieve is configured — otherwise the bot behaves exactly as before.
+    if couple["paired"] and pensieve_client.is_enabled():
+        forwarded = await pensieve_client.forward_to_inbox(
+            update.message.text or "",
+            chat_id=couple["self_chat_id"],
+            couple_id=couple["couple_id"],
+        )
+        if forwarded:
+            await update.message.reply_text("📥 Got it — I'll sort that out.")
+        else:
+            await update.message.reply_text(
+                "Hmm, I couldn't file that just now. Try again in a moment?"
+            )
+        return
+
     await update.message.reply_text("I don't understand that. Try /start for commands!")
 
 
@@ -480,7 +498,7 @@ async def post_init(application: Application):
     reschedule_all_meals()
 
     global menu_api_runner
-    menu_api_runner = await start_menu_api(parse_deadline)
+    menu_api_runner = await start_menu_api(parse_deadline, send_callback=safe_send)
     logger.info("Bot started! Scheduler running.")
 
 
@@ -506,7 +524,7 @@ def main():
     application.add_handler(CommandHandler("done", cmd_done))
     application.add_handler(CommandHandler("tasks", cmd_tasks))
     application.add_handler(CommandHandler("nag", cmd_nag))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_unknown))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_freetext))
 
     logger.info("Starting Nag Bot...")
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
