@@ -1,9 +1,21 @@
 import asyncio
 import os
+import time
 import logging
 from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
+
+# The whole bot works in naive "local" time. Pin that local time to a single zone
+# (IST by default; override with BOT_TZ) BEFORE the scheduler is imported/built and
+# before any datetime.now() runs — otherwise "local" is the host clock (UTC on the
+# server), which made 7 AM reminders fire at 12:30 PM IST. This makes datetime.now()
+# and APScheduler (see scheduler.py) agree on the same wall clock.
+load_dotenv()
+os.environ["TZ"] = os.getenv("BOT_TZ", "Asia/Kolkata")
+if hasattr(time, "tzset"):
+    time.tzset()
+
 from telegram import Update, BotCommand
 from telegram.error import Forbidden
 from telegram.ext import (
@@ -39,8 +51,6 @@ from scheduler import (
 from sass_engine import generate_completion_message
 from menu_api import start_menu_api, stop_menu_api
 import pensieve_client
-
-load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
@@ -12,7 +13,13 @@ from database import (
 )
 from sass_engine import generate_reminder
 
-scheduler = AsyncIOScheduler()
+# The bot stores and compares naive "local" datetimes throughout. APScheduler
+# interprets those naive run times in *its* timezone, which otherwise defaults to
+# the host clock — UTC on the deployed server, so a naive 07:00 fired at 07:00 UTC
+# (12:30 IST). Pin the scheduler to IST (override with BOT_TZ) so naive times mean
+# what the user wrote. bot.py pins the process clock (datetime.now()) to match.
+BOT_TZ = os.getenv("BOT_TZ", "Asia/Kolkata")
+scheduler = AsyncIOScheduler(timezone=BOT_TZ)
 
 _send_reminder_callback = None
 _send_meal_callback = None
