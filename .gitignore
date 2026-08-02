@@ -1,4 +1,6 @@
 .env
 nag_bot.db
+nag_bot.db-wal
+nag_bot.db-shm
 __pycache__/
 *.pyc

@@ -476,9 +476,10 @@ async def handle_freetext(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=couple["self_chat_id"],
             couple_id=couple["couple_id"],
         )
-        if forwarded:
-            await update.message.reply_text("📥 Got it — I'll sort that out.")
-        else:
+        # No ack on success: Claire sends the real, per-agent confirmation back via
+        # /deliver ("🍲 Noted — Aloo Arjun's got the menu.", …). A generic ack here
+        # would just double-message. Only speak up if the capture itself failed.
+        if not forwarded:
             await update.message.reply_text(
                 "Hmm, I couldn't file that just now. Try again in a moment?"
             )

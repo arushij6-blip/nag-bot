@@ -104,7 +104,7 @@ def test_freetext_forward_success(monkeypatched=True):
     try:
         upd = fake_update("plan dinner for friday", chat_id=111)
         asyncio.run(bot.handle_freetext(upd, None))
-        check("acks capture", upd.message.replies == ["📥 Got it — I'll sort that out."])
+        check("stays silent on success (Claire sends the real ack)", upd.message.replies == [])
         check("forwarded correct text", captured.get("text") == "plan dinner for friday")
         check("forwarded self chat_id", captured.get("chat_id") == 111)
         check("forwarded couple_id", captured.get("couple_id") == 1)
